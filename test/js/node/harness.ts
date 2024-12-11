@@ -297,6 +297,8 @@ if (Bun.main.includes("node/test/parallel")) {
           error.testStack = this.testStack;
           const testMessage = `Test failed: ${this.testStack.join(" > ")}`;
           error.message = testMessage + "\n" + error.message;
+          if (!error.stack) Error.captureStackTrace(error);
+
           this.failures.push(error);
           console.error(error);
           return error;
@@ -311,22 +313,30 @@ if (Bun.main.includes("node/test/parallel")) {
 
     function getContext() {
       const key: string = Bun.main;// module.parent?.filename ?? require.main?.filename ?? __filename;
-      return activeSuite = (contexts[key] ??= createContext(key));
+      activeSuite = (contexts[key] ??= createContext(key));
+      return activeSuite
     }
 
-    async function test(label: string | Function, fn?: Function | undefined) {
+    function test(label: string | Function, fn?: Function | undefined) {
       if (typeof fn !== "function" && typeof label === "function") {
         fn = label;
         label = fn.name;
       }
+      if (typeof label !== "string" && typeof fn !== "function") {
+        throw new TypeError(`First argument to test() must be a string or a function. Got ${typeof label}, ${typeof fn}`);
+      }
       const ctx = getContext();
+      if (!ctx) throw new Error("invarian violation: test context is undefined.");
       try {
         ctx.testStack.push(label as string);
-        await fn();
+        const res = fn();
+        if (res instanceof Promise) {
+          throw new Error("test() does not support async functions right now.");
+          process.exit(1);
+        }
         ctx.recordSuccess();
       } catch (err) {
-        const error = ctx.addFailure(err);
-        throw error;
+        ctx.addFailure(err);
       } finally {
         ctx.testStack.pop();
       }
