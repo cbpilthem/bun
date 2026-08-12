@@ -7,8 +7,8 @@
  * against local root/file-read access, backups, or a compromised
  * process. Encrypt-at-rest before storing real customer keys.
  *
- * Host hook (one line, e.g. in aiComplete()):
- *   const key = AiTokenVault.get(uniqueId) ?? String(t.api_key ?? "").trim();
+ * Host hook (one line, e.g. in ai()):
+ *   const key = AiTokenVault.resolve(uniqueId, provider);
  *
  * Portability: host may rename this class freely. If tenantDir() isn't
  * defined globally, call before first use:
@@ -19,18 +19,44 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
-type TenantDirResolver = (uniqueId: string) => string;
-type Secrets = Record<string, string>;
+export type TenantDirResolver = (uniqueId: string) => string;
+export type Secrets = Record<string, string>;
+
+/** Well-known provider ids → common env var names (checked in order). */
+export const PROVIDER_ENV_KEYS: Record<string, readonly string[]> = {
+  openrouter: ["OPENROUTER_API_KEY", "OR_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  anthropic: ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
+  google: ["GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+  groq: ["GROQ_API_KEY"],
+  together: ["TOGETHER_API_KEY", "TOGETHERAI_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  mistral: ["MISTRAL_API_KEY"],
+  xai: ["XAI_API_KEY", "GROK_API_KEY"],
+  perplexity: ["PERPLEXITY_API_KEY"],
+  fireworks: ["FIREWORKS_API_KEY"],
+  cerebras: ["CEREBRAS_API_KEY"],
+  cohere: ["COHERE_API_KEY"],
+  ollama: ["OLLAMA_API_KEY"], // optional; local usually needs none
+};
 
 export class AiTokenVault {
   static #pathResolver: TenantDirResolver | null = null;
+  static #activeTenant: string | null = null;
 
+  /** Set tenant directory resolver: (uniqueId) => absolute path. */
   static configure(tenantDirResolver: TenantDirResolver): void {
     this.#pathResolver = tenantDirResolver;
   }
 
-  static get(uniqueId: string, provider = "anthropic"): string | null {
-    return this.#load(uniqueId)[provider] ?? null;
+  /** Optional default tenant for resolve()/get() when uniqueId omitted. */
+  static use(uniqueId: string | null): void {
+    this.#activeTenant = uniqueId;
+  }
+
+  static get(uniqueId: string, provider = "openrouter"): string | null {
+    const key = this.#load(uniqueId)[provider];
+    return typeof key === "string" && key.length > 0 ? key : null;
   }
 
   static set(uniqueId: string, provider: string, key: string): void {
@@ -39,10 +65,38 @@ export class AiTokenVault {
     this.#save(uniqueId, secrets);
   }
 
-  static clear(uniqueId: string, provider = "anthropic"): void {
+  static clear(uniqueId: string, provider = "openrouter"): void {
     const secrets = this.#load(uniqueId);
     delete secrets[provider];
     this.#save(uniqueId, secrets);
+  }
+
+  /** All stored provider → key pairs for a tenant (no env merge). */
+  static list(uniqueId: string): Secrets {
+    return { ...this.#load(uniqueId) };
+  }
+
+  /**
+   * Resolve an API key: vault → process.env (known + PROVIDER_API_KEY).
+   * Pass uniqueId or rely on AiTokenVault.use(id).
+   */
+  static resolve(provider: string, uniqueId?: string | null): string | null {
+    const uid = uniqueId ?? this.#activeTenant;
+    if (uid) {
+      const fromVault = this.get(uid, provider);
+      if (fromVault) return fromVault;
+    }
+    return this.envKey(provider);
+  }
+
+  /** Read provider key from environment only. */
+  static envKey(provider: string): string | null {
+    const names = PROVIDER_ENV_KEYS[provider] ?? [`${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`];
+    for (const name of names) {
+      const v = process.env[name]?.trim();
+      if (v) return v;
+    }
+    return null;
   }
 
   // --- helpers ---
